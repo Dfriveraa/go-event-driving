@@ -1,6 +1,7 @@
 github.com/ThreeDotsLabs/go-event-driven v0.0.10 h1:hlGBh0sXe51y6xNl7YDsEZiTAUyiO1P92R0/V/J0+nM=
 github.com/ThreeDotsLabs/watermill v1.2.0/go.mod h1:IuVxGk/kgCN0cex2S94BLglUiB0PwOm8hbUhm6g2Nx4=
 github.com/ThreeDotsLabs/watermill-redisstream v1.0.0/go.mod h1:h0ioBPNtnczu+ADhol7UgFBM1hTbmgqJYrfSt+Zoi28=
+github.com/ThreeDotsLabs/watermill-redisstream v1.1.0/go.mod h1:h0ioBPNtnczu+ADhol7UgFBM1hTbmgqJYrfSt+Zoi28=
 github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751/go.mod h1:LOuyumcjzFXgccqObfd/Ljyb9UuFJ6TxHnclSeseNhc=
 github.com/alecthomas/units v0.0.0-20190924025748-f65c72e2690d/go.mod h1:rBZYJk541a8SKzHPHnH3zbiI+7dagKZ0cgpgrD7Fyho=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
