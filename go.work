@@ -9,5 +9,6 @@ use (
 	./04-router/01-handlers
 	./04-router/02-no-publisher-handlers
 	./05-events/02-marshalling
+	./05-events/03-headers
 	./project
 )
