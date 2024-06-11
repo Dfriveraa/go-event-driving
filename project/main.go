@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,27 @@ import (
 
 type TicketsConfirmationRequest struct {
 	Tickets []string `json:"tickets"`
+}
+
+type price struct {
+	Amount   string `json:"amount"`
+	Currency string `json:"currency"`
+}
+type TicketInfoEvent struct {
+	TicketID      string `json:"ticket_id"`
+	CustomerEmail string `json:"customer_email"`
+	Price         price  `json:"price"`
+}
+
+type TicketStatus struct {
+	TicketID      string `json:"ticket_id"`
+	Status        string `json:"status"`
+	CustomerEmail string `json:"customer_email"`
+	Price         price  `json:"price"`
+}
+
+type TicketStatusRequest struct {
+	Tickets []TicketStatus `json:"tickets"`
 }
 
 func main() {
@@ -73,7 +95,19 @@ func main() {
 		"issue-receipt",
 		issueReceiptSub,
 		func(msg *message.Message) error {
-			err := receiptsClient.IssueReceipt(msg.Context(), string(msg.Payload))
+			var payload TicketInfoEvent
+			err := json.Unmarshal(msg.Payload, &payload)
+			if err != nil {
+				return err
+			}
+			err = receiptsClient.IssueReceipt(msg.Context(),
+				IssueReceiptRequest{TicketID: payload.TicketID,
+					Price: Money{Amount: payload.Price.Amount,
+						Currency: payload.Price.Currency,
+					}})
+			if err != nil {
+				return err
+			}
 			return err
 		},
 	)
@@ -82,7 +116,12 @@ func main() {
 		"append-to-tracker",
 		appendToTrackerSub,
 		func(msg *message.Message) error {
-			err = spreadsheetsClient.AppendRow(msg.Context(), "tickets-to-print", []string{string(msg.Payload)})
+			var payload TicketInfoEvent
+			err := json.Unmarshal(msg.Payload, &payload)
+			if err != nil {
+				return err
+			}
+			err = spreadsheetsClient.AppendRow(msg.Context(), "tickets-to-print", []string{payload.TicketID, payload.CustomerEmail, payload.Price.Amount, payload.Price.Currency})
 			return err
 		},
 	)
@@ -102,6 +141,41 @@ func main() {
 				return err
 			}
 
+			err = pub.Publish("append-to-tracker", msg)
+			if err != nil {
+				return err
+			}
+		}
+		return c.NoContent(http.StatusOK)
+	})
+
+	e.POST("/tickets-status", func(c echo.Context) error {
+		var request TicketStatusRequest
+		err := c.Bind(&request)
+		if err != nil {
+			return err
+		}
+
+		for _, ticket := range request.Tickets {
+			ticketInfo := TicketInfoEvent{
+				TicketID:      ticket.TicketID,
+				CustomerEmail: ticket.CustomerEmail,
+				Price: price{
+					Amount:   ticket.Price.Amount,
+					Currency: ticket.Price.Currency,
+				},
+			}
+			jsonData, err := json.Marshal(ticketInfo)
+			if err != nil {
+				return err
+			}
+
+			msg := message.NewMessage(watermill.NewUUID(), []byte(jsonData))
+			err = pub.Publish("issue-receipt", msg)
+			if err != nil {
+				return err
+			}
+			msg = message.NewMessage(watermill.NewUUID(), []byte(jsonData))
 			err = pub.Publish("append-to-tracker", msg)
 			if err != nil {
 				return err
