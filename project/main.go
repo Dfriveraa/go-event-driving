@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/ThreeDotsLabs/go-event-driven/common/clients"
 	commonHTTP "github.com/ThreeDotsLabs/go-event-driven/common/http"
@@ -13,35 +14,34 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill-redisstream/pkg/redisstream"
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
-type TicketsConfirmationRequest struct {
-	Tickets []string `json:"tickets"`
-}
-
-type price struct {
-	Amount   string `json:"amount"`
-	Currency string `json:"currency"`
-}
-type TicketInfoEvent struct {
-	TicketID      string `json:"ticket_id"`
-	CustomerEmail string `json:"customer_email"`
-	Price         price  `json:"price"`
+type TicketsStatusRequest struct {
+	Tickets []TicketStatus `json:"tickets"`
 }
 
 type TicketStatus struct {
 	TicketID      string `json:"ticket_id"`
 	Status        string `json:"status"`
+	Price         Money  `json:"price"`
 	CustomerEmail string `json:"customer_email"`
-	Price         price  `json:"price"`
 }
 
-type TicketStatusRequest struct {
-	Tickets []TicketStatus `json:"tickets"`
+type EventHeader struct {
+	ID          string    `json:"id"`
+	PublishedAt time.Time `json:"published_at"`
+}
+
+type TicketBookingConfirmed struct {
+	Header        EventHeader `json:"header"`
+	TicketID      string      `json:"ticket_id"`
+	CustomerEmail string      `json:"customer_email"`
+	Price         Money       `json:"price"`
 }
 
 func main() {
@@ -83,126 +83,106 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	logger := watermill.NewStdLogger(false, false)
 
-	router, err := message.NewRouter(message.RouterConfig{}, logger)
-	if err != nil {
-		panic(err)
-	}
-
-	router.AddNoPublisherHandler(
-		"issue-handler",
-		"issue-receipt",
-		issueReceiptSub,
-		func(msg *message.Message) error {
-			var payload TicketInfoEvent
-			err := json.Unmarshal(msg.Payload, &payload)
-			if err != nil {
-				return err
-			}
-			err = receiptsClient.IssueReceipt(msg.Context(),
-				IssueReceiptRequest{TicketID: payload.TicketID,
-					Price: Money{Amount: payload.Price.Amount,
-						Currency: payload.Price.Currency,
-					}})
-			if err != nil {
-				return err
-			}
-			return err
-		},
-	)
-	router.AddNoPublisherHandler(
-		"tracker-handler",
-		"append-to-tracker",
-		appendToTrackerSub,
-		func(msg *message.Message) error {
-			var payload TicketInfoEvent
-			err := json.Unmarshal(msg.Payload, &payload)
-			if err != nil {
-				return err
-			}
-			err = spreadsheetsClient.AppendRow(msg.Context(), "tickets-to-print", []string{payload.TicketID, payload.CustomerEmail, payload.Price.Amount, payload.Price.Currency})
-			return err
-		},
-	)
 	e := commonHTTP.NewEcho()
-
-	e.POST("/tickets-confirmation", func(c echo.Context) error {
-		var request TicketsConfirmationRequest
-		err := c.Bind(&request)
-		if err != nil {
-			return err
-		}
-
-		for _, ticket := range request.Tickets {
-			msg := message.NewMessage(watermill.NewUUID(), []byte(ticket))
-			err = pub.Publish("issue-receipt", msg)
-			if err != nil {
-				return err
-			}
-
-			err = pub.Publish("append-to-tracker", msg)
-			if err != nil {
-				return err
-			}
-		}
-		return c.NoContent(http.StatusOK)
-	})
-
-	e.POST("/tickets-status", func(c echo.Context) error {
-		var request TicketStatusRequest
-		err := c.Bind(&request)
-		if err != nil {
-			return err
-		}
-
-		for _, ticket := range request.Tickets {
-			ticketInfo := TicketInfoEvent{
-				TicketID:      ticket.TicketID,
-				CustomerEmail: ticket.CustomerEmail,
-				Price: price{
-					Amount:   ticket.Price.Amount,
-					Currency: ticket.Price.Currency,
-				},
-			}
-			jsonData, err := json.Marshal(ticketInfo)
-			if err != nil {
-				return err
-			}
-
-			msg := message.NewMessage(watermill.NewUUID(), []byte(jsonData))
-			err = pub.Publish("issue-receipt", msg)
-			if err != nil {
-				return err
-			}
-			msg = message.NewMessage(watermill.NewUUID(), []byte(jsonData))
-			err = pub.Publish("append-to-tracker", msg)
-			if err != nil {
-				return err
-			}
-		}
-		return c.NoContent(http.StatusOK)
-	})
 
 	e.GET("/health", func(c echo.Context) error {
 		return c.String(http.StatusOK, "ok")
 	})
 
-	logrus.Info("Server starting...")
-	ctx := context.Background()
-	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
+	e.POST("/tickets-status", func(c echo.Context) error {
+		var request TicketsStatusRequest
+		err := c.Bind(&request)
+		if err != nil {
+			return err
+		}
+
+		for _, ticket := range request.Tickets {
+			if ticket.Status != "confirmed" {
+				continue
+			}
+
+			event := TicketBookingConfirmed{
+				Header:        NewHeader(),
+				TicketID:      ticket.TicketID,
+				CustomerEmail: ticket.CustomerEmail,
+				Price:         ticket.Price,
+			}
+
+			payload, err := json.Marshal(event)
+			if err != nil {
+				return err
+			}
+
+			msg := message.NewMessage(watermill.NewUUID(), payload)
+			err = pub.Publish("TicketBookingConfirmed", msg)
+			if err != nil {
+				return err
+			}
+		}
+
+		return c.NoContent(http.StatusOK)
+	})
+
+	router, err := message.NewRouter(message.RouterConfig{}, watermillLogger)
+	if err != nil {
+		panic(err)
+	}
+
+	router.AddNoPublisherHandler(
+		"issue_receipt",
+		"TicketBookingConfirmed",
+		issueReceiptSub,
+		func(msg *message.Message) error {
+			var event TicketBookingConfirmed
+			err := json.Unmarshal(msg.Payload, &event)
+			if err != nil {
+				return err
+			}
+
+			return receiptsClient.IssueReceipt(msg.Context(), IssueReceiptRequest{
+				TicketID: event.TicketID,
+				Price: Money{
+					Amount:   event.Price.Amount,
+					Currency: event.Price.Currency,
+				},
+			})
+		},
+	)
+
+	router.AddNoPublisherHandler(
+		"print_ticket",
+		"TicketBookingConfirmed",
+		appendToTrackerSub,
+		func(msg *message.Message) error {
+			var event TicketBookingConfirmed
+			err := json.Unmarshal(msg.Payload, &event)
+			if err != nil {
+				return err
+			}
+
+			return spreadsheetsClient.AppendRow(
+				msg.Context(),
+				"tickets-to-print",
+				[]string{event.TicketID, event.CustomerEmail, event.Price.Amount, event.Price.Currency},
+			)
+		},
+	)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+	errgrp, ctx := errgroup.WithContext(ctx)
 
-	g, ctx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
+	errgrp.Go(func() error {
 		return router.Run(ctx)
 	})
 
-	g.Go(func() error {
+	errgrp.Go(func() error {
+		// we don't want to start HTTP server before Watermill router (so service won't be healthy before it's ready)
 		<-router.Running()
 
 		err := e.Start(":8080")
+
 		if err != nil && err != http.ErrServerClosed {
 			return err
 		}
@@ -210,15 +190,19 @@ func main() {
 		return nil
 	})
 
-	g.Go(func() error {
-		// Shut down the HTTP server
+	errgrp.Go(func() error {
 		<-ctx.Done()
-		return e.Shutdown(ctx)
+		return e.Shutdown(context.Background())
 	})
 
-	// Will block until all goroutines finish
-	err = g.Wait()
-	if err != nil {
+	if err := errgrp.Wait(); err != nil {
 		panic(err)
+	}
+}
+
+func NewHeader() EventHeader {
+	return EventHeader{
+		ID:          uuid.NewString(),
+		PublishedAt: time.Now().UTC(),
 	}
 }
