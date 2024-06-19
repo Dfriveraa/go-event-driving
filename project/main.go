@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -84,6 +85,14 @@ func main() {
 		panic(err)
 	}
 
+	refundTicketSub, err := redisstream.NewSubscriber(redisstream.SubscriberConfig{
+		Client:        rdb,
+		ConsumerGroup: "refund-ticket",
+	}, watermillLogger)
+	if err != nil {
+		panic(err)
+	}
+
 	e := commonHTTP.NewEcho()
 
 	e.GET("/health", func(c echo.Context) error {
@@ -98,10 +107,16 @@ func main() {
 		}
 
 		for _, ticket := range request.Tickets {
-			if ticket.Status != "confirmed" {
-				continue
-			}
+			topic := "TicketBookingConfirmed"
+			switch ticket.Status {
+			case "confirmed":
+				topic = "TicketBookingConfirmed"
+			case "canceled":
+				topic = "TicketBookingCanceled"
+			default:
+				topic = "TicketBookingConfirmed"
 
+			}
 			event := TicketBookingConfirmed{
 				Header:        NewHeader(),
 				TicketID:      ticket.TicketID,
@@ -113,9 +128,9 @@ func main() {
 			if err != nil {
 				return err
 			}
-
+			watermillLogger.Debug(fmt.Sprintf("Sending to topic %s", topic), nil)
 			msg := message.NewMessage(watermill.NewUUID(), payload)
-			err = pub.Publish("TicketBookingConfirmed", msg)
+			err = pub.Publish(topic, msg)
 			if err != nil {
 				return err
 			}
@@ -164,6 +179,24 @@ func main() {
 			return spreadsheetsClient.AppendRow(
 				msg.Context(),
 				"tickets-to-print",
+				[]string{event.TicketID, event.CustomerEmail, event.Price.Amount, event.Price.Currency},
+			)
+		},
+	)
+
+	router.AddNoPublisherHandler(
+		"refund_ticket",
+		"TicketBookingCanceled",
+		refundTicketSub,
+		func(msg *message.Message) error {
+			var event TicketBookingConfirmed
+			err := json.Unmarshal(msg.Payload, &event)
+			if err != nil {
+				return err
+			}
+			return spreadsheetsClient.AppendRow(
+				msg.Context(),
+				"tickets-to-refund",
 				[]string{event.TicketID, event.CustomerEmail, event.Price.Amount, event.Price.Currency},
 			)
 		},
