@@ -17,6 +17,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/lithammer/shortuuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
@@ -48,7 +49,10 @@ type TicketBookingConfirmed struct {
 func main() {
 	log.Init(logrus.InfoLevel)
 
-	clients, err := clients.NewClients(os.Getenv("GATEWAY_ADDR"), nil)
+	clients, err := clients.NewClients(os.Getenv("GATEWAY_ADDR"), func(ctx context.Context, req *http.Request) error {
+		req.Header.Set("Correlation-ID", log.CorrelationIDFromContext(ctx))
+		return nil
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -130,6 +134,7 @@ func main() {
 			}
 			watermillLogger.Debug(fmt.Sprintf("Sending to topic %s", topic), nil)
 			msg := message.NewMessage(watermill.NewUUID(), payload)
+			msg.Metadata.Set("correlation_id", c.Request().Header.Get("Correlation-ID"))
 			err = pub.Publish(topic, msg)
 			if err != nil {
 				return err
@@ -143,7 +148,26 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
+	router.AddMiddleware(
+		func(h message.HandlerFunc) message.HandlerFunc {
+			return func(msg *message.Message) ([]*message.Message, error) {
+				// logrus.WithField("message_uuid", msg.UUID).Info("Handling a message")
+				router.Logger().Info("Handling a message", watermill.LogFields{"message_uuid": msg.UUID})
+				return h(msg)
+			}
+		},
+		func(h message.HandlerFunc) message.HandlerFunc {
+			return func(msg *message.Message) ([]*message.Message, error) {
+				correlationID := msg.Metadata.Get("correlation_id")
+				if correlationID == "" {
+					correlationID = shortuuid.New()
+				}
+				ctx := log.ContextWithCorrelationID(msg.Context(), correlationID)
+				msg.SetContext(ctx)
+				return h(msg)
+			}
+		},
+	)
 	router.AddNoPublisherHandler(
 		"issue_receipt",
 		"TicketBookingConfirmed",
