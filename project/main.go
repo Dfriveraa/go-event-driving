@@ -46,6 +46,18 @@ type TicketBookingConfirmed struct {
 	Price         Money       `json:"price"`
 }
 
+func LoggingMiddleware(next message.HandlerFunc) message.HandlerFunc {
+	return func(msg *message.Message) ([]*message.Message, error) {
+		logger := log.FromContext(msg.Context())
+		logger = logger.WithField("message_uuid", msg.UUID)
+
+		logger.Info("Handling a message")
+
+		return next(msg)
+	}
+}
+
+
 func main() {
 	log.Init(logrus.InfoLevel)
 
@@ -148,14 +160,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
 	router.AddMiddleware(
-		func(h message.HandlerFunc) message.HandlerFunc {
-			return func(msg *message.Message) ([]*message.Message, error) {
-				// logrus.WithField("message_uuid", msg.UUID).Info("Handling a message")
-				router.Logger().Info("Handling a message", watermill.LogFields{"message_uuid": msg.UUID})
-				return h(msg)
-			}
-		},
 		func(h message.HandlerFunc) message.HandlerFunc {
 			return func(msg *message.Message) ([]*message.Message, error) {
 				correlationID := msg.Metadata.Get("correlation_id")
@@ -163,10 +169,12 @@ func main() {
 					correlationID = shortuuid.New()
 				}
 				ctx := log.ContextWithCorrelationID(msg.Context(), correlationID)
+				ctx = log.ToContext(ctx, logrus.WithFields(logrus.Fields{"correlation_id": correlationID}))
 				msg.SetContext(ctx)
 				return h(msg)
 			}
 		},
+		LoggingMiddleware
 	)
 	router.AddNoPublisherHandler(
 		"issue_receipt",
