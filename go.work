@@ -10,5 +10,6 @@ use (
 	./04-router/02-no-publisher-handlers
 	./05-events/02-marshalling
 	./05-events/03-headers
+	./06-middlewares/01-add-middleware
 	./project
 )
