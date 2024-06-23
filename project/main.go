@@ -47,16 +47,35 @@ type TicketBookingConfirmed struct {
 }
 
 func LoggingMiddleware(next message.HandlerFunc) message.HandlerFunc {
-	return func(msg *message.Message) ([]*message.Message, error) {
+	return func(msg *message.Message) (msgs []*message.Message, err error) {
 		logger := log.FromContext(msg.Context())
 		logger = logger.WithField("message_uuid", msg.UUID)
-
 		logger.Info("Handling a message")
-
+		defer func() {
+			if err != nil {
+				logger.WithError(err).Error("Message handling error")
+			}
+		}()
 		return next(msg)
+
 	}
 }
 
+func ErrorLoggingMiddleware(next message.HandlerFunc) message.HandlerFunc {
+	return func(msg *message.Message) (msgs []*message.Message, err error) {
+
+		defer func() {
+			if err != nil {
+				fields := map[string]interface{}{"message_uuid": msg.UUID, "error": err}
+				logger := log.FromContext(msg.Context())
+				logger = logger.WithFields(fields)
+				logger.Info("Message handling error")
+				logger.Error(err)
+			}
+		}()
+		return next(msg)
+	}
+}
 
 func main() {
 	log.Init(logrus.InfoLevel)
@@ -174,7 +193,8 @@ func main() {
 				return h(msg)
 			}
 		},
-		LoggingMiddleware
+		LoggingMiddleware,
+		ErrorLoggingMiddleware,
 	)
 	router.AddNoPublisherHandler(
 		"issue_receipt",
